@@ -7,8 +7,8 @@ import torch
 import torchaudio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from transformers import AutoModel
-
-
+import soundfile as sf
+from nepalinumbers import normalize_nepali_numbers
 # ============================================================
 # Configuration
 # ============================================================
@@ -116,7 +116,8 @@ def convert_to_wav(webm_bytes: bytes):
 
 def transcribe_audio(wav_path: str):
 
-    waveform, sample_rate = torchaudio.load(wav_path)
+    data, sample_rate = sf.read(wav_path, dtype="float32", always_2d=True)
+    waveform = torch.from_numpy(data.T).contiguous()
 
     print("=" * 60)
     print("Loaded WAV")
@@ -160,14 +161,10 @@ def transcribe_audio(wav_path: str):
     # Explicitly guarantee [1, samples]
     # --------------------------------------------------------
 
-    if waveform.ndim == 1:
-
-        waveform = waveform.unsqueeze(0)
-
-    if waveform.ndim != 2:
+    if waveform.ndim != 2 or waveform.shape[0] !=1:
 
         raise RuntimeError(
-            f"Unexpected audio shape: {waveform.shape}. "
+            f"Unexpected audio shape: {tuple(waveform.shape)}. "
             "Expected [1, samples]."
         )
 
@@ -216,6 +213,14 @@ def transcribe_audio(wav_path: str):
             "ne",
             "ctc",
         )
+    if isinstance(transcription,(list,tuple)):
+        transcription = transcription[0]
+
+    print("Raw transcription:", transcription)
+
+    transcription = normalize_nepali_numbers(transcription)
+
+    print("Normalized transcription:", transcription)
 
     return transcription
 
