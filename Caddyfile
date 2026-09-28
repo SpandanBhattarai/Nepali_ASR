@@ -1,0 +1,6 @@
+https://192.168.10.61 {
+    tls internal
+
+    reverse_proxy /ws 127.0.0.1:8000
+    reverse_proxy 127.0.0.1:3000
+}

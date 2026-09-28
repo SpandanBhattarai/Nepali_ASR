@@ -38,24 +38,39 @@ def normalize(word: str) -> str:
     return word
 
 
+def _fold(word: str) -> str:
+    """Ignore long/short vowel and chandrabindu differences: बीस == बिस, तीन == तिन, पाँच == पांच."""
+    return word.replace("ी", "ि").replace("ू", "ु").replace("ँ", "ं")
+
+
 def closest_match(word: str, vocab: dict, cutoff: float = 0.75):
     """
-    Exact match after normalization; if that fails, fuzzy-match against
-    the known vocabulary. Returns the matched key, or None if nothing
-    is close enough (caller decides whether that's fatal).
+    1) exact match after normalization;
+    2) match ignoring long/short vowel differences (only if exactly ONE known
+       spelling matches, so it never guesses between two numbers);
+    3) fuzzy match against the known vocabulary.
+    Returns the matched key, or None if nothing is close enough (caller
+    decides whether that's fatal).
     """
     norm = normalize(word)
     if norm in vocab:
         return norm
+
+    folded = _fold(norm)
+    same = [key for key in vocab if _fold(key) == folded]
+    if len(same) == 1:
+        return same[0]
+
     candidates = get_close_matches(norm, vocab.keys(), n=1, cutoff=cutoff)
     return candidates[0] if candidates else None
+
 
 # ---------------------------------------------------------------------
 # 1) Real Nepali number words -> int
 # ---------------------------------------------------------------------
 
 NEPALI_UNITS = {
-    "शून्य": 0, "एक": 1, "दुई": 2, "तीन": 3, "चार": 4, "पाँच": 5,
+    "शून्य": 0, "सुन्ना": 0, "सुन्य": 0, "जिरो": 0, "जेरो": 0, "एक": 1, "दुई": 2, "तीन": 3, "चार": 4, "पाँच": 5,
     "छ": 6, "सात": 7, "आठ": 8, "नौ": 9, "दश": 10,
     "एघार": 11, "बाह्र": 12, "तेह्र": 13, "चौध": 14, "पन्ध्र": 15,
     "सोह्र": 16, "सत्र": 17, "अठार": 18, "उन्नाइस": 19,
@@ -81,6 +96,7 @@ NEPALI_UNITS = {
 # multiplier words (Nepali uses lakh/crore grouping, not thousand/million)
 NEPALI_MULTIPLIERS = {
     "सय": 100,
+    "से" : 100,
     "हजार": 1_000,
     "लाख": 100_000,
     "करोड": 10_000_000,
@@ -89,35 +105,86 @@ NEPALI_MULTIPLIERS = {
 }
 
 
-def parse_nepali_words(text: str, strict: bool = False) -> int:
-    """'चार हजार चार सय चौरालीस' -> 4444
+def _words_to_int(keys, units, multipliers, english=False):
+    """Combine matched number-word keys into one int.
 
-    strict=False (default): unrecognized/misspelled tokens are resolved
-    via fuzzy matching against the known vocabulary when possible.
-    strict=True: any unmatched token raises immediately (no guessing).
+    Words that belong to one number are combined:
+        सात हजार दुई सय तीन -> 7203      (english: forty four -> 44)
+    Words that do NOT belong together (digit by digit) are written side by
+    side, like a phone number or OTP, and returned as a STRING so a leading
+    zero is kept:
+        एक दुई तीन चार -> "1234"      जिरो एक दुई तीन -> "0123"
+    Anything else that would be several different numbers raises ValueError
+    instead of returning a wrong-looking number.
     """
-    words = text.strip().split()
-    total = 0
-    current = 0
-    for w in words:
-        key = closest_match(w, NEPALI_UNITS) or closest_match(w, NEPALI_MULTIPLIERS)
-        if key in NEPALI_UNITS:
-            current += NEPALI_UNITS[key]
-        elif key in NEPALI_MULTIPLIERS:
-            mult = NEPALI_MULTIPLIERS[key]
+    numbers = []
+    total = current = 0
+    started = after_multiplier = False
+    prev_unit = None
+    for key in keys:
+        if key in units:
+            value = units[key]
+            # English builds 44 as "forty" + "four"; Nepali has one word for 44.
+            tens_then_unit = (english and prev_unit is not None
+                              and 20 <= prev_unit <= 90 and prev_unit % 10 == 0
+                              and 1 <= value <= 9)
+            if started and not after_multiplier and not tens_then_unit:
+                numbers.append(total + current)   # a new, separate number
+                total = current = 0
+            current += value
+            after_multiplier = False
+            prev_unit = value
+        else:
+            mult = multipliers[key]
             if mult == 100:
                 current = (current or 1) * mult
             else:
                 total += (current or 1) * mult
                 current = 0
-        elif strict:
-            raise ValueError(f"Unrecognized Nepali number word: {w!r}")
+            after_multiplier = True
+            prev_unit = None
+        started = True
+    numbers.append(total + current)
+
+    if len(numbers) == 1:
+        return numbers[0]
+    if all(0 <= n <= 99 for n in numbers):        # digit by digit
+        return "".join(str(n) for n in numbers)  # a str, so a leading zero is kept: "0123"
+    raise ValueError(f"Several separate numbers, cannot make one: {numbers}")
+
+
+def _merge_unan_say(words):
+    """The model often writes 99 as two words: 'उनान् सय' -> 'उनान्सय'."""
+    out, i = [], 0
+    while i < len(words):
+        if (i + 1 < len(words)
+                and normalize(words[i]) in {"उनान", "उनान्"}
+                and normalize(words[i + 1]) == "सय"):
+            out.append("उनान्सय")
+            i += 2
         else:
+            out.append(words[i])
+            i += 1
+    return out
+
+
+def parse_nepali_words(text: str, strict: bool = False) -> "int | str":
+    """'चार हजार चार सय चौरालीस' -> 4444     'एक दुई तीन चार' -> 1234
+
+    Unrecognized/misspelled tokens are resolved via vowel-length folding and
+    then fuzzy matching against the known vocabulary when possible.
+    Raises ValueError if a token cannot be matched at all.
+    """
+    keys = []
+    for w in _merge_unan_say(text.strip().split()):
+        key = closest_match(w, NEPALI_UNITS) or closest_match(w, NEPALI_MULTIPLIERS)
+        if key is None:
             raise ValueError(
                 f"Unrecognized Nepali number word: {w!r} "
                 f"(no close match found even fuzzily)"
             )
-    return total + current
+        keys.append(key)
+    return _words_to_int(keys, NEPALI_UNITS, NEPALI_MULTIPLIERS)
 
 
 # ---------------------------------------------------------------------
@@ -142,29 +209,19 @@ PHONETIC_MULTIPLIERS = {
 }
 
 
-def parse_phonetic_english(text: str) -> int:
-    """'फोर थाउजन्ड फोर हन्ड्रेड फोर्टी फोर' -> 4444
+def parse_phonetic_english(text: str) -> "int | str":
+    """'फोर थाउजन्ड फोर हन्ड्रेड फोर्टी फोर' -> 4444     'फोर फोर फोर फोर' -> 4444
 
     Tolerates common transliteration variance (फोर/फ़ोर, वान/वन,
     थाउजन्ड/थाउजैंड, etc.) via fuzzy matching.
     """
-    words = text.strip().split()
-    total = 0
-    current = 0
-    for w in words:
+    keys = []
+    for w in text.strip().split():
         key = closest_match(w, PHONETIC_UNITS) or closest_match(w, PHONETIC_MULTIPLIERS)
-        if key in PHONETIC_UNITS:
-            current += PHONETIC_UNITS[key]
-        elif key in PHONETIC_MULTIPLIERS:
-            mult = PHONETIC_MULTIPLIERS[key]
-            if mult == 100:
-                current = (current or 1) * mult
-            else:
-                total += (current or 1) * mult
-                current = 0
-        else:
+        if key is None:
             raise ValueError(f"Unrecognized phonetic word: {w!r}")
-    return total + current
+        keys.append(key)
+    return _words_to_int(keys, PHONETIC_UNITS, PHONETIC_MULTIPLIERS, english=True)
 
 
 if __name__ == "__main__":

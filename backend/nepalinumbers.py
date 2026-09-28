@@ -42,15 +42,47 @@ _UNITS = {
     "सठ": 60, "सठी": 60, "साठ": 60, "साठि": 60,
     "बीसौं": 20, "उन्नाईस": 19, "अठाइस": 28, "पैंसठ्ठी": 65, "सत्ताउन्न": 57,
     "उनानब्बे":89, "उननान्साई":99, "उनासय":99, "उननासी": 99, "छैसठी":66,
-    "बासठी":62, "बासठ्ठी":62, "उननान्सय": 99, "उननासय":99
+    "बासठी":62, "बासठ्ठी":62, "उननान्सय": 99, "उननासय":99, "उनान्सै":99
+    
 }
 _SCALES = {"सय": 100, "सी": 100, "स": 100, "से": 100, "सै": 100, "सौ": 100, "हज़ार": 1000, "हजार": 1000, "लाख": 100000, "करोड": 10000000, "अर्ब": 1000000000}
+_SCALE_VARIANTS = {
+    "सी": 100, "से": 100, "स": 100,           # mishearings of सय seen in the model output
+    "हज़ार": 1000, "करोड़": 10000000, "अरब": 1000000000,
+}
 
-VOCAB = {_norm(k): v for k, v in {**_UNITS, **_SCALES}.items()}
-SCALE_WORDS = {_norm(k) for k in _SCALES}
+VOCAB = {_norm(k): v for k, v in {**_UNITS, **_SCALES, **_SCALE_VARIANTS}.items()}
+SCALE_WORDS = {_norm(k) for k in {**_SCALES,**_SCALE_VARIANTS}}
 AMBIGUOUS = set()
 _MAXLEN = max(len(k) for k in VOCAB)
 
+_UN_PREFIX = {_norm(x) for x in ["उन", "उना", "उनान", "उनान्", "उनन", "उनन्", "उन्नान", "उन्नान्"]}
+_HUNDRED_TAILS = {_norm(x) for x in ["सय", "सी", "से", "स", "सै"]}
+_TAIL_TO_VALUE = {_norm(k): v for k, v in {
+    "नब्बे": 89, "नब्बै": 89, "साठी": 59, "सठी": 59, "सत्तरी": 69, "सतरी": 69,
+    "चालीस": 39, "तीस": 29, "पचास": 49, "असी": 79,
+}.items()}
+_VALUE_WORD = {v: _norm(k) for k, v in _UNITS.items()}   # canonical word for each value
+
+def _merge_un_prefix(tokens):
+    out, i = [], 0
+    while i < len(tokens):
+        t = tokens[i]
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+        if t in _UN_PREFIX and nxt is not None:
+            val = None
+            if nxt in _HUNDRED_TAILS:
+                # "उना सी" = 79 (उनासी); "उनान सय/सी" = 99
+                val = 79 if (nxt == _norm("सी") and t in {_norm("उना"), _norm("उन")}) else 99
+            elif nxt in _TAIL_TO_VALUE:
+                val = _TAIL_TO_VALUE[nxt]
+            if val is not None:
+                out.append(_VALUE_WORD[val])
+                i += 2
+                continue
+        out.append(t)
+        i += 1
+    return out
 
 def _segment(token):
     if not token:
@@ -101,11 +133,11 @@ def _convert_run(words):
 
 
 def normalize_nepali_numbers(text: str) -> str:
-    tokens = _norm(text).split()
+    tokens = _merge_un_prefix(_norm(text).split())
     segs = [_segment(t) for t in tokens]
     has_other_words = any(s is None for s in segs)
 
-    out, run = [], []
+    out, run, ignored= [], [], []
 
     def flush():
         if not run:
@@ -121,7 +153,14 @@ def normalize_nepali_numbers(text: str) -> str:
             run.extend(seg)
         else:
             flush()
+            if DROP_NON_NUMBERS:
+                ignored.append(tok)
+            else:
+                out.append(tok)
     flush()
+
+    if ignored:
+        print("nepali_numbers:ignored non-number words:", ignored)
 
     result = " ".join(out)
     return result.translate(_TO_DEVANAGARI) if USE_NEPALI_DIGITS else result

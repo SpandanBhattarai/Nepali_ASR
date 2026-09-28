@@ -8,7 +8,26 @@ import torchaudio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from transformers import AutoModel
 import soundfile as sf
-from nepalinumbers import normalize_nepali_numbers
+from numerical_parser import parse_nepali_words, parse_phonetic_english
+
+_DEVANAGARI_DIGITS = str.maketrans("0123456789", "०१२३४५६७८९")
+
+
+def words_to_number(text: str) -> str:
+    """Nepali or English number words -> digits in Devanagari, using numerical_parser only.
+    If neither parser understands the text, the raw text is returned unchanged."""
+    text = str(text).strip()
+    if not text:
+        return text
+
+    for parser in (parse_nepali_words, parse_phonetic_english):
+        try:
+            return str(parser(text)).translate(_DEVANAGARI_DIGITS)
+        except ValueError:
+            continue
+
+    print("numerical_parser could not parse:", repr(text))
+    return text
 # ============================================================
 # Configuration
 # ============================================================
@@ -185,11 +204,18 @@ def transcribe_audio(wav_path: str):
             "Audio contains zero samples."
         )
 
+    # These measurements make remote microphone problems observable in the
+    # backend log without storing a user's recording.
+    peak_level = waveform.abs().max().item()
+    rms_level = waveform.square().mean().sqrt().item()
+
     print("Final audio shape:", waveform.shape)
     print("Final sample rate: 16000")
     print("Audio duration:",
           waveform.shape[1] / 16000,
           "seconds")
+    print(f"Audio peak level: {peak_level:.6f}")
+    print(f"Audio RMS level: {rms_level:.6f}")
 
     # --------------------------------------------------------
     # Move audio to GPU
@@ -207,18 +233,41 @@ def transcribe_audio(wav_path: str):
     print("Running IndicConformer...")
 
     with torch.no_grad():
-
+        # CTC is the decoder used by this project's model smoke test. RNNT
+        # remains a fallback for clips CTC cannot decode.
         transcription = model(
             audio,
             "ne",
             "ctc",
         )
-    if isinstance(transcription,(list,tuple)):
-        transcription = transcription[0]
+
+        if isinstance(transcription, (list, tuple)):
+            transcription = transcription[0] if transcription else ""
+
+        transcription = str(transcription).strip()
+
+        if not transcription:
+            print("CTC returned no text; trying RNNT fallback...")
+            transcription = model(
+                audio,
+                "ne",
+                "rnnt",
+            )
+
+    if isinstance(transcription, (list, tuple)):
+        transcription = transcription[0] if transcription else ""
+
+    transcription = str(transcription).strip()
+
+    if not transcription:
+        raise RuntimeError(
+            "No speech was recognized. Check the browser microphone permission "
+            "and speak clearly for at least one second."
+        )
 
     print("Raw transcription:", transcription)
 
-    transcription = normalize_nepali_numbers(transcription)
+    transcription = words_to_number(transcription)
 
     print("Normalized transcription:", transcription)
 
