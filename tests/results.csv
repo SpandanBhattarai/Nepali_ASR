@@ -1,0 +1,25 @@
+file,expected,got,verdict,latency_s
+digit_70398.mp3,70398,70398,MATCH,0.343
+digit_984123.mp3,984123,न आठ चार एक दुई तिन,no-digits,0.431
+digit_9841234567.mp3,9841234567,9841234567,MATCH,0.313
+digits_0123.mp3,0123,0123,MATCH,0.386
+digits_1234.mp3,1234,1234,MATCH,0.356
+digits_4444.mp3,4444,4444,MATCH,0.314
+eng_0123.mp3,0123,0123,MATCH,0.352
+eng_123.mp3,123,वान हन्ड्रेड थोनििस्री,no-digits,0.294
+eng_2025.mp3,2025,2025,MATCH,0.207
+eng_4444.mp3,4444,4444,MATCH,0.315
+num_1253.mp3,1253,1253,MATCH,0.267
+num_18420.mp3,18420,18420,MATCH,0.286
+num_2025.mp3,2025,2025,MATCH,0.257
+num_25.mp3,25,25,MATCH,0.192
+num_350000.mp3,350000,350000,MATCH,0.320
+num_36.mp3,36,36,MATCH,0.221
+num_44.mp3,44,40,MISMATCH,0.252
+num_4444.mp3,4444,चार हजार चार सय चवालिस,no-digits,0.265
+num_500.mp3,500,500,MATCH,0.214
+num_53.mp3,53,53,MATCH,0.224
+num_7162.mp3,7162,सात हजार एक सय बैसट्ठी,no-digits,0.281
+num_78.mp3,78,78,MATCH,0.258
+num_87.mp3,87,87,MATCH,0.249
+num_99.mp3,99,1000,MISMATCH,0.246
